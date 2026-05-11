@@ -185,6 +185,9 @@ public struct MeasurementAnalyzer {
         switch state {
         case let .pure(ket):
             let projected = try QuantumDomain.applyOperator(projector, ket)
+            if sameProjectiveRay(projected, ket, epsilon: config.spectralResidualThreshold) {
+                return .pure(ket)
+            }
             let normSquared = QuantumDomain.normSquared(projected)
             guard normSquared > config.scalarComparisonEpsilon else {
                 return .pure(ket)
@@ -208,6 +211,37 @@ public struct MeasurementAnalyzer {
             }
             return .density(normalized)
         }
+    }
+
+    private func sameProjectiveRay(
+        _ lhs: Ket,
+        _ rhs: Ket,
+        epsilon: Double
+    ) -> Bool {
+        guard lhs.space.isCoordinateCompatible(with: rhs.space),
+              lhs.basis == rhs.basis,
+              lhs.coefficients.count == rhs.coefficients.count else {
+            return false
+        }
+
+        let lhsNormSquared = lhs.coefficients.reduce(0.0) { partial, scalar in
+            partial + scalar.magnitudeSquaredApproximate
+        }
+        let rhsNormSquared = rhs.coefficients.reduce(0.0) { partial, scalar in
+            partial + scalar.magnitudeSquaredApproximate
+        }
+        guard lhsNormSquared > config.scalarComparisonEpsilon,
+              rhsNormSquared > config.scalarComparisonEpsilon else {
+            return false
+        }
+
+        let inner = zip(lhs.coefficients, rhs.coefficients).reduce(
+            ComplexNumber(re: 0, im: 0)
+        ) { partial, pair in
+            partial + (pair.0.approximateValue.conjugated * pair.1.approximateValue)
+        }
+        let fidelity = inner.magnitudeSquared / (lhsNormSquared * rhsNormSquared)
+        return abs(1 - fidelity) <= epsilon
     }
 
     private func nonselectivePosterior(
