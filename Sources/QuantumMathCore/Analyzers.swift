@@ -33,26 +33,35 @@ public struct QuantumMathBackends: Sendable {
 public struct SpectralAnalysisResult: Hashable, Sendable, Codable {
     public let decomposition: SpectralDecomposition
     public let exactificationMetadataByComponent: [Int: ExactificationMetadata]
+    public let vectorExactificationMetadataByComponent: [Int: [String: ExactificationMetadata]]
 
     public init(
         decomposition: SpectralDecomposition,
-        exactificationMetadataByComponent: [Int: ExactificationMetadata]
+        exactificationMetadataByComponent: [Int: ExactificationMetadata],
+        vectorExactificationMetadataByComponent: [Int: [String: ExactificationMetadata]] = [:]
     ) {
         self.decomposition = decomposition
         self.exactificationMetadataByComponent = exactificationMetadataByComponent
+        self.vectorExactificationMetadataByComponent = vectorExactificationMetadataByComponent
     }
 }
 
 public struct SingularValueAnalysisResult: Hashable, Sendable, Codable {
     public let decomposition: SingularValueDecomposition
     public let exactificationMetadataByComponent: [Int: ExactificationMetadata]
+    public let leftVectorExactificationMetadataByComponent: [Int: [Int: ExactificationMetadata]]
+    public let rightVectorExactificationMetadataByComponent: [Int: [Int: ExactificationMetadata]]
 
     public init(
         decomposition: SingularValueDecomposition,
-        exactificationMetadataByComponent: [Int: ExactificationMetadata]
+        exactificationMetadataByComponent: [Int: ExactificationMetadata],
+        leftVectorExactificationMetadataByComponent: [Int: [Int: ExactificationMetadata]] = [:],
+        rightVectorExactificationMetadataByComponent: [Int: [Int: ExactificationMetadata]] = [:]
     ) {
         self.decomposition = decomposition
         self.exactificationMetadataByComponent = exactificationMetadataByComponent
+        self.leftVectorExactificationMetadataByComponent = leftVectorExactificationMetadataByComponent
+        self.rightVectorExactificationMetadataByComponent = rightVectorExactificationMetadataByComponent
     }
 }
 
@@ -89,6 +98,7 @@ public struct SpectralAnalyzer {
         )
 
         var metadata: [Int: ExactificationMetadata] = [:]
+        var vectorMetadata: [Int: [String: ExactificationMetadata]] = [:]
         let updatedComponents = decomposition.components.enumerated().map { index, component in
             let exactified = ScalarExactificationAdapter.exactify(
                 component.eigenvalue,
@@ -96,10 +106,23 @@ public struct SpectralAnalyzer {
                 config: config
             )
             metadata[index] = metadataFor(outcome: exactified.outcome)
+
+            let exactifiedVectors = component.eigenvectors.enumerated().map { vectorIndex, eigenvector in
+                let exactifiedVector = StateVectorExactificationAdapter.exactify(
+                    eigenvector,
+                    label: "spectral.\(index).v\(vectorIndex)",
+                    config: config
+                )
+                for (coefficientIndex, coefficientMetadata) in exactifiedVector.metadataByCoefficient {
+                    vectorMetadata[index, default: [:]]["v\(vectorIndex).c\(coefficientIndex)"] = coefficientMetadata
+                }
+                return exactifiedVector.ket
+            }
+
             return EigenComponent(
                 eigenvalue: exactified.scalar,
                 multiplicity: component.multiplicity,
-                eigenvectors: component.eigenvectors
+                eigenvectors: exactifiedVectors
             )
         }
 
@@ -109,7 +132,8 @@ public struct SpectralAnalyzer {
                 basis: decomposition.basis,
                 components: updatedComponents
             ),
-            exactificationMetadataByComponent: metadata
+            exactificationMetadataByComponent: metadata,
+            vectorExactificationMetadataByComponent: vectorMetadata
         )
     }
 
@@ -219,21 +243,35 @@ public struct SingularValueAnalyzer {
         }
 
         var metadata: [Int: ExactificationMetadata] = [:]
+        var leftVectorMetadata: [Int: [Int: ExactificationMetadata]] = [:]
+        var rightVectorMetadata: [Int: [Int: ExactificationMetadata]] = [:]
         let components = try (0..<raw.rank).map { index in
             var left = raw.leftVector(at: index)
             var right = raw.rightVector(at: index)
             phaseCanonicalize(left: &left, right: &right)
 
-            let leftVector = try Ket(
+            let approximateLeftVector = try Ket(
                 space: operatorValue.codomain,
                 basis: operatorValue.rowBasis,
                 coefficients: left.map { .approx(sanitized($0)) }
             )
-            let rightVector = try Ket(
+            let approximateRightVector = try Ket(
                 space: operatorValue.domain,
                 basis: operatorValue.columnBasis,
                 coefficients: right.map { .approx(sanitized($0)) }
             )
+            let leftExactification = StateVectorExactificationAdapter.exactify(
+                approximateLeftVector,
+                label: "svd.\(index).left",
+                config: config
+            )
+            let rightExactification = StateVectorExactificationAdapter.exactify(
+                approximateRightVector,
+                label: "svd.\(index).right",
+                config: config
+            )
+            leftVectorMetadata[index] = leftExactification.metadataByCoefficient
+            rightVectorMetadata[index] = rightExactification.metadataByCoefficient
 
             let singularValue = Scalar.approx(
                 ComplexNumber(
@@ -250,8 +288,8 @@ public struct SingularValueAnalyzer {
 
             return SingularValueComponent(
                 singularValue: exactified.scalar,
-                leftVector: leftVector,
-                rightVector: rightVector
+                leftVector: leftExactification.ket,
+                rightVector: rightExactification.ket
             )
         }
 
@@ -263,7 +301,9 @@ public struct SingularValueAnalyzer {
                 rowBasis: operatorValue.rowBasis,
                 components: components
             ),
-            exactificationMetadataByComponent: metadata
+            exactificationMetadataByComponent: metadata,
+            leftVectorExactificationMetadataByComponent: leftVectorMetadata,
+            rightVectorExactificationMetadataByComponent: rightVectorMetadata
         )
     }
 }

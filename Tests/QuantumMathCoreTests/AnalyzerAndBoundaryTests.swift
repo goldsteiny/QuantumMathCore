@@ -43,7 +43,95 @@ private struct MockSingularSolver: SingularValueSolver {
     }
 }
 
+private struct DictionaryResolver: ValueResolver {
+    let values: [QuantumReferenceID: QuantumValue]
+
+    func resolve(_ reference: QuantumReferenceID) throws -> QuantumValue {
+        guard let value = values[reference] else {
+            throw QuantumMathError.operationNotDefined("Missing test reference.")
+        }
+        return value
+    }
+}
+
 struct AnalyzerAndBoundaryTests {
+    @Test
+    func quantumOperationEvaluatesTypedExpressionThroughResolver() throws {
+        let space = try Space(validating: [.qubit], maxComputableDimension: 16)
+        let basis = Basis.computational(for: space)
+        let ket = try Ket(space: space, basis: basis, coefficients: [.one, .zero])
+        let identity = try Operator(
+            domain: space,
+            codomain: space,
+            columnBasis: basis,
+            rowBasis: basis,
+            entries: .identity(size: 2)
+        )
+        let ketID = QuantumReferenceID("ket")
+        let operatorID = QuantumReferenceID("identity")
+        let resolver = DictionaryResolver(values: [
+            ketID: .ket(ket),
+            operatorID: .oper(identity)
+        ])
+
+        let result = try QuantumOperation().evaluate(
+            expression: .binary(.applyOperator, operatorID, ketID),
+            resolver: resolver
+        )
+
+        guard case let .ket(resultKet) = result else {
+            Issue.record("Expected ket result.")
+            return
+        }
+
+        #expect(resultKet.coefficients[0].approximatelyEquals(.one, epsilon: 1e-10))
+        #expect(resultKet.coefficients[1].approximatelyEquals(.zero, epsilon: 1e-10))
+    }
+
+    @Test
+    func qutrit27PreviewConfigAcceptsThreeQutritSpace() throws {
+        let qutritSpace = try Space(
+            validating: [.qutrit, .qutrit, .qutrit],
+            maxComputableDimension: QuantumMathConfig.ketStepsQutrit27Preview.maxComputableDimension
+        )
+
+        #expect(qutritSpace.dimension == 27)
+    }
+
+    @Test
+    func qutrit27PreviewIsRequiredForThreeQutritTensorEvaluation() throws {
+        let qutrit = try Space(validating: [.qutrit], maxComputableDimension: 16)
+        let basis = Basis.computational(for: qutrit)
+        let ket = try Ket(space: qutrit, basis: basis, coefficients: [.one, .zero, .zero])
+        let ids = [
+            QuantumReferenceID("q0"),
+            QuantumReferenceID("q1"),
+            QuantumReferenceID("q2")
+        ]
+        let resolver = DictionaryResolver(values: Dictionary(
+            uniqueKeysWithValues: ids.map { ($0, QuantumValue.ket(ket)) }
+        ))
+        let expression = QuantumExpression.ordered(.tensor, ids)
+
+        do {
+            _ = try QuantumOperation().evaluate(expression: expression, resolver: resolver)
+            Issue.record("Default KetSteps config should reject three qutrit tensor evaluation.")
+        } catch {
+        }
+
+        let result = try QuantumOperation(config: .ketStepsQutrit27Preview).evaluate(
+            expression: expression,
+            resolver: resolver
+        )
+
+        guard case let .ket(resultKet) = result else {
+            Issue.record("Expected qutrit preview tensor to evaluate to a ket.")
+            return
+        }
+
+        #expect(resultKet.space.dimension == 27)
+    }
+
     @Test
     func analyzersProduceExpectedShapesWithInjectedBackends() throws {
         let space = try Space(validating: [.qubit], maxComputableDimension: 16)

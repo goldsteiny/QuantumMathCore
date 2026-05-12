@@ -45,4 +45,16 @@ public struct QuantumMathConfig: Hashable, Sendable, Codable {
         orthogonalityThreshold: 1e-10,
         exactificationPolicy: .default
     )
+
+    public static let ketStepsQutrit27Preview = QuantumMathConfig(
+        maxComputableDimension: 27,
+        matrixTraitEpsilon: 1e-9,
+        scalarComparisonEpsilon: 1e-10,
+        spectralResidualThreshold: 1e-6,
+        svdResidualThreshold: 1e-6,
+        projectorDistanceThreshold: 1e-6,
+        normThreshold: 1e-10,
+        orthogonalityThreshold: 1e-10,
+        exactificationPolicy: .default
+    )
 }

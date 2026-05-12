@@ -1,8 +1,20 @@
 import Foundation
 
 public enum QuantumDomain {
-    public static func dagger(_ ket: Ket) throws -> [Scalar] {
-        ket.coefficients.map(\.conjugated)
+    public static func dagger(_ ket: Ket) throws -> Bra {
+        try Bra(
+            space: ket.space,
+            basis: ket.basis,
+            coefficients: ket.coefficients.map(\.conjugated)
+        )
+    }
+
+    public static func dagger(_ bra: Bra) throws -> Ket {
+        try Ket(
+            space: bra.space,
+            basis: bra.basis,
+            coefficients: bra.coefficients.map(\.conjugated)
+        )
     }
 
     public static func applyOperator(_ op: Operator, _ ket: Ket) throws -> Ket {
@@ -33,25 +45,36 @@ public enum QuantumDomain {
         )
     }
 
-    public static func outerProduct(_ ket: Ket, _ bra: [Scalar]) throws -> Operator {
-        guard ket.coefficients.count == bra.count else {
+    public static func outerProduct(_ ket: Ket, _ bra: Bra) throws -> Operator {
+        guard ket.space.isCoordinateCompatible(with: bra.space),
+              ket.basis == bra.basis else {
+            throw QuantumMathError.incompatibleSpaces(expected: ket.space, actual: bra.space)
+        }
+        guard ket.coefficients.count == bra.coefficients.count else {
             throw QuantumMathError.invalidCoefficientCount(
                 expected: ket.coefficients.count,
-                actual: bra.count
+                actual: bra.coefficients.count
             )
         }
         let dimension = ket.space.dimension
         let values = (0..<dimension).flatMap { row in
             (0..<dimension).map { col in
-                ket.coefficients[row] * bra[col]
+                ket.coefficients[row] * bra.coefficients[col]
             }
         }
         return try Operator(
-            domain: ket.space,
+            domain: bra.space,
             codomain: ket.space,
-            columnBasis: ket.basis,
+            columnBasis: bra.basis,
             rowBasis: ket.basis,
             entries: Matrix(uncheckedRows: dimension, cols: dimension, values: values)
+        )
+    }
+
+    public static func outerProduct(_ ket: Ket, _ braCoefficients: [Scalar]) throws -> Operator {
+        try outerProduct(
+            ket,
+            Bra(space: ket.space, basis: ket.basis, coefficients: braCoefficients)
         )
     }
 
