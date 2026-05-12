@@ -50,10 +50,18 @@ public enum ScalarExactificationAdapter {
     ) -> ScalarExactificationResult {
         let atomID = ApproximateAtomID("scalar/\(label)")
         let variableID = RecoveryVariableID("var/\(label)")
+        let approximate = scalar.approximateValue
+
+        guard approximate.re.isFinite, approximate.im.isFinite else {
+            return ScalarExactificationResult(
+                scalar: scalar,
+                outcome: .unresolved(.nonFiniteInput([atomID]))
+            )
+        }
 
         let atom = ApproximateAtom(
             id: atomID,
-            value: scalar.approximateValue.canonicalizedSignedZero,
+            value: approximate.canonicalizedSignedZero,
             role: .scalar
         )
         let variable = RecoveryVariable(
@@ -168,26 +176,13 @@ public enum ScalarExactificationAdapter {
         expressions.append(.rational(.one))
 
         if abs(target.im) <= threshold {
-            let denominators = [1, 2, 3, 4, 6, 8, 12, 16]
-            for denominator in denominators {
-                let center = Int((target.re * Double(denominator)).rounded())
-                for delta in -1...1 {
-                    expressions.append(.rational(Rational(center + delta, denominator)))
-                }
-            }
-
-            let candidateRadicands = [2, 3, 5]
-            for radicand in candidateRadicands {
-                let root = Foundation.sqrt(Double(radicand))
-                let denominators = [1, 2, 3, 4, 6, 8]
-                for denominator in denominators {
-                    let coefficient = Int((target.re * Double(denominator) / root).rounded())
-                    expressions.append(
-                        .canonicalSignedRationalTimesSqrt(
-                            coefficient: Rational(coefficient, denominator),
-                            radicand: radicand
-                        )
-                    )
+            expressions.append(contentsOf: realExpressions(near: target.re).map { scalarExpression(for: $0) })
+        } else {
+            let realCandidates = realExpressions(near: target.re)
+            let imaginaryCandidates = realExpressions(near: target.im)
+            for real in realCandidates {
+                for imaginary in imaginaryCandidates {
+                    expressions.append(.complex(real: real, imag: imaginary))
                 }
             }
         }
@@ -228,6 +223,49 @@ public enum ScalarExactificationAdapter {
             }
 
         return deduped
+    }
+
+    private static func realExpressions(near value: Double) -> [ExactRealExpression] {
+        var expressions: [ExactRealExpression] = [.rational(.zero)]
+
+        let rationalDenominators = [1, 2, 3, 4, 6, 8, 12, 16]
+        for denominator in rationalDenominators {
+            let center = Int((value * Double(denominator)).rounded())
+            for delta in -1...1 {
+                expressions.append(.rational(Rational(center + delta, denominator)))
+            }
+        }
+
+        let candidateRadicands = [2, 3, 5]
+        let radicalDenominators = [1, 2, 3, 4, 6, 8, 12]
+        for radicand in candidateRadicands {
+            let root = Foundation.sqrt(Double(radicand))
+            for denominator in radicalDenominators {
+                let coefficient = Int((value * Double(denominator) / root).rounded())
+                for delta in -1...1 {
+                    expressions.append(
+                        .canonicalRationalTimesSqrt(
+                            coefficient: Rational(coefficient + delta, denominator),
+                            radicand: radicand
+                        )
+                    )
+                }
+            }
+        }
+
+        var seen = Set<String>()
+        return expressions
+            .map(\.canonicalized)
+            .filter { seen.insert($0.canonicalKey).inserted }
+    }
+
+    private static func scalarExpression(for real: ExactRealExpression) -> ExactScalarExpression {
+        switch real.canonicalized {
+        case let .rational(value):
+            return .rational(value)
+        case let .rationalTimesSqrt(coefficient, radicand):
+            return .signedRationalTimesSqrt(coefficient: coefficient, radicand: radicand)
+        }
     }
 
     private static func familyName(for expression: ExactScalarExpression) -> String {

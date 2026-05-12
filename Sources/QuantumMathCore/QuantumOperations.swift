@@ -31,9 +31,11 @@ public enum QuantumDomain {
     }
 
     public static func compose(_ lhs: Operator, _ rhs: Operator) throws -> Operator {
-        guard lhs.domain.isCoordinateCompatible(with: rhs.codomain),
-              lhs.columnBasis == rhs.rowBasis else {
-            throw QuantumMathError.operationNotDefined("Operator composition requires compatible spaces and bases.")
+        guard lhs.domain.isCoordinateCompatible(with: rhs.codomain) else {
+            throw QuantumMathError.incompatibleSpaces(expected: lhs.domain, actual: rhs.codomain)
+        }
+        guard lhs.columnBasis == rhs.rowBasis else {
+            throw QuantumMathError.incompatibleBases(lhs: lhs.columnBasis, rhs: rhs.rowBasis)
         }
         let entries = try lhs.entries.multiplied(by: rhs.entries)
         return try Operator(
