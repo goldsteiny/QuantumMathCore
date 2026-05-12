@@ -18,9 +18,11 @@ public enum QuantumDomain {
     }
 
     public static func applyOperator(_ op: Operator, _ ket: Ket) throws -> Ket {
-        guard op.domain.isCoordinateCompatible(with: ket.space),
-              op.columnBasis == ket.basis else {
+        guard op.domain.isCoordinateCompatible(with: ket.space) else {
             throw QuantumMathError.incompatibleSpaces(expected: op.domain, actual: ket.space)
+        }
+        guard op.columnBasis == ket.basis else {
+            throw QuantumMathError.incompatibleBases(lhs: op.columnBasis, rhs: ket.basis)
         }
         let coefficients = try op.entries.multiplied(by: ket.coefficients)
         return try Ket(
@@ -48,9 +50,11 @@ public enum QuantumDomain {
     }
 
     public static func outerProduct(_ ket: Ket, _ bra: Bra) throws -> Operator {
-        guard ket.space.isCoordinateCompatible(with: bra.space),
-              ket.basis == bra.basis else {
+        guard ket.space.isCoordinateCompatible(with: bra.space) else {
             throw QuantumMathError.incompatibleSpaces(expected: ket.space, actual: bra.space)
+        }
+        guard ket.basis == bra.basis else {
+            throw QuantumMathError.incompatibleBases(lhs: ket.basis, rhs: bra.basis)
         }
         guard ket.coefficients.count == bra.coefficients.count else {
             throw QuantumMathError.invalidCoefficientCount(
@@ -81,9 +85,11 @@ public enum QuantumDomain {
     }
 
     public static func innerProduct(_ lhs: Ket, _ rhs: Ket) throws -> Scalar {
-        guard lhs.space.isCoordinateCompatible(with: rhs.space),
-              lhs.basis == rhs.basis else {
+        guard lhs.space.isCoordinateCompatible(with: rhs.space) else {
             throw QuantumMathError.incompatibleSpaces(expected: lhs.space, actual: rhs.space)
+        }
+        guard lhs.basis == rhs.basis else {
+            throw QuantumMathError.incompatibleBases(lhs: lhs.basis, rhs: rhs.basis)
         }
         return zip(lhs.coefficients, rhs.coefficients).reduce(.zero) { partial, pair in
             partial + (pair.0.conjugated * pair.1)

@@ -91,14 +91,21 @@ public struct MeasurementAnalyzer {
               measurement.observable.columnBasis.isCoordinateCompatible(with: state.basis) else {
             throw QuantumMathError.operationNotDefined("Measurement basis or space mismatch.")
         }
+        let analysisState = try validatedState(
+            alignedState(state, to: measurement.observable.columnBasis)
+        )
 
         let spectral = try spectralAnalyzer.hermitianDecomposition(measurement.observable)
         let outcomes = try spectral.decomposition.components.map { component in
-            let projector = try projector(for: component, space: state.space, basis: state.basis)
-            let probability = try validProbability(rawProbability(for: projector, state: state))
+            let projector = try projector(
+                for: component,
+                space: measurement.observable.domain,
+                basis: measurement.observable.columnBasis
+            )
+            let probability = try validProbability(rawProbability(for: projector, state: analysisState))
             let isZeroProbability = probability.approximateValue.re <= config.scalarComparisonEpsilon
             let post = isZeroProbability ? nil : try postMeasurementState(
-                state: state,
+                state: analysisState,
                 projector: projector,
                 probability: probability
             )
@@ -118,16 +125,67 @@ public struct MeasurementAnalyzer {
         }
 
         let moments = try makeMoments(outcomes: outcomes)
-        let posterior = try nonselectivePosterior(state: state, projectors: outcomes.map(\.projector))
+        let posterior = try nonselectivePosterior(state: analysisState, projectors: outcomes.map(\.projector))
 
         return MeasurementAnalysisResult(
             observable: measurement,
-            state: state,
+            state: analysisState,
             outcomes: outcomes,
             probabilityTotal: probabilityTotal,
             moments: moments,
             posterior: posterior
         )
+    }
+
+    private func alignedState(_ state: MeasurementState, to basis: Basis) throws -> MeasurementState {
+        switch state {
+        case let .pure(ket):
+            guard ket.basis != basis else {
+                return state
+            }
+            return .pure(try Ket(space: basis.space, basis: basis, coefficients: ket.coefficients))
+        case let .density(operatorValue):
+            guard operatorValue.columnBasis != basis || operatorValue.rowBasis != basis else {
+                return state
+            }
+            return .density(try Operator(
+                domain: basis.space,
+                codomain: basis.space,
+                columnBasis: basis,
+                rowBasis: basis,
+                entries: operatorValue.entries
+            ))
+        }
+    }
+
+    private func validatedState(_ state: MeasurementState) throws -> MeasurementState {
+        switch state {
+        case let .pure(ket):
+            let normSquared = QuantumDomain.normSquared(ket)
+            guard abs(normSquared - 1) <= config.scalarComparisonEpsilon else {
+                throw QuantumMathError.operationNotDefined(
+                    "Measurement requires a normalized ket. Insert an explicit normalize line first."
+                )
+            }
+            return state
+        case let .density(operatorValue):
+            guard isTraceOneHermitianState(operatorValue) else {
+                throw QuantumMathError.operationNotDefined(
+                    "Measurement state must be a normalized ket or trace-one density operator."
+                )
+            }
+            return state
+        }
+    }
+
+    private func isTraceOneHermitianState(_ operatorValue: Operator) -> Bool {
+        guard operatorValue.domain == operatorValue.codomain,
+              operatorValue.rowBasis == operatorValue.columnBasis,
+              operatorValue.entries.isHermitian(tolerance: config.matrixTraitEpsilon),
+              let trace = operatorValue.entries.trace() else {
+            return false
+        }
+        return trace.approximatelyEquals(.one, epsilon: config.scalarComparisonEpsilon)
     }
 
     private func projector(for component: EigenComponent, space: Space, basis: Basis) throws -> Operator {
@@ -144,7 +202,7 @@ public struct MeasurementAnalyzer {
             codomain: space,
             columnBasis: basis,
             rowBasis: basis,
-            entries: exactifiedMatrix(entries, label: "measurement.projector")
+            entries: entries
         )
     }
 
@@ -170,11 +228,7 @@ public struct MeasurementAnalyzer {
         guard approximate.re >= -config.spectralResidualThreshold else {
             throw QuantumMathError.operationNotDefined("Measurement probability must be non-negative.")
         }
-        return ScalarExactificationAdapter.exactify(
-            .approx(ComplexNumber(re: max(approximate.re, 0), im: 0)),
-            label: "measurement.probability",
-            config: config
-        ).scalar
+        return .approx(ComplexNumber(re: max(approximate.re, 0), im: 0))
     }
 
     private func postMeasurementState(
@@ -200,13 +254,7 @@ public struct MeasurementAnalyzer {
                     .approx($0.approximateValue.scaled(by: scale))
                 }
             )
-            return .pure(
-                StateVectorExactificationAdapter.exactify(
-                    normalized,
-                    label: "measurement.post_state",
-                    config: config
-                ).ket
-            )
+            return .pure(normalized)
         case let .density(density):
             let numerator = try QuantumDomain.compose(
                 try QuantumDomain.compose(projector, density),
@@ -215,7 +263,7 @@ public struct MeasurementAnalyzer {
             guard let normalized = divide(operatorValue: numerator, by: probability) else {
                 return .density(density)
             }
-            return .density(try exactifiedOperator(normalized, label: "measurement.post_density"))
+            return .density(normalized)
         }
     }
 
@@ -266,19 +314,15 @@ public struct MeasurementAnalyzer {
             return Matrix<Scalar>(uncheckedRows: partial.rows, cols: partial.cols, values: values)
         }
 
-        let stateOperator = try exactifiedOperator(Operator(
+        let stateOperator = try Operator(
             domain: density.domain,
             codomain: density.codomain,
             columnBasis: density.columnBasis,
             rowBasis: density.rowBasis,
             entries: accumulated
-        ), label: "measurement.posterior")
+        )
         let squared = try QuantumDomain.compose(stateOperator, stateOperator)
-        let purity = ScalarExactificationAdapter.exactify(
-            trace(of: squared.entries),
-            label: "measurement.posterior.purity",
-            config: config
-        ).scalar
+        let purity = trace(of: squared.entries)
 
         return MeasurementPosterior(state: stateOperator, purity: purity)
     }
@@ -296,26 +340,10 @@ public struct MeasurementAnalyzer {
             ComplexNumber(re: Foundation.sqrt(varianceReal), im: 0)
         )
         return MeasurementMoments(
-            expectedValue: ScalarExactificationAdapter.exactify(
-                expected,
-                label: "measurement.expected",
-                config: config
-            ).scalar,
-            expectedSquaredValue: ScalarExactificationAdapter.exactify(
-                expectedSquared,
-                label: "measurement.expected_squared",
-                config: config
-            ).scalar,
-            variance: ScalarExactificationAdapter.exactify(
-                .approx(ComplexNumber(re: varianceReal, im: 0)),
-                label: "measurement.variance",
-                config: config
-            ).scalar,
-            standardDeviation: ScalarExactificationAdapter.exactify(
-                std,
-                label: "measurement.stddev",
-                config: config
-            ).scalar
+            expectedValue: expected,
+            expectedSquaredValue: expectedSquared,
+            variance: .approx(ComplexNumber(re: varianceReal, im: 0)),
+            standardDeviation: std
         )
     }
 
@@ -356,27 +384,4 @@ public struct MeasurementAnalyzer {
         }
     }
 
-    private func exactifiedOperator(_ operatorValue: Operator, label: String) throws -> Operator {
-        try Operator(
-            domain: operatorValue.domain,
-            codomain: operatorValue.codomain,
-            columnBasis: operatorValue.columnBasis,
-            rowBasis: operatorValue.rowBasis,
-            entries: exactifiedMatrix(operatorValue.entries, label: label)
-        )
-    }
-
-    private func exactifiedMatrix(_ matrix: Matrix<Scalar>, label: String) -> Matrix<Scalar> {
-        Matrix<Scalar>(
-            uncheckedRows: matrix.rows,
-            cols: matrix.cols,
-            values: matrix.values.enumerated().map { index, scalar in
-                ScalarExactificationAdapter.exactify(
-                    scalar,
-                    label: "\(label).m\(index)",
-                    config: config
-                ).scalar
-            }
-        )
-    }
 }

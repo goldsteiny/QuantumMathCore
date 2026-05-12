@@ -17,8 +17,16 @@ public struct StateVectorExactificationResult: Hashable, Sendable, Codable {
 public enum StateVectorExactificationAdapter {
     public static func exactify(
         _ ket: Ket,
-        label: String,
+        label _: String,
         config: QuantumMathConfig
+    ) -> StateVectorExactificationResult {
+        exactify(ket, config: config, cache: nil)
+    }
+
+    public static func exactify(
+        _ ket: Ket,
+        config: QuantumMathConfig,
+        cache: QuantumExactificationCache?
     ) -> StateVectorExactificationResult {
         if let knownState = KnownStateExactifier.bestKnownState(matching: ket, config: config) {
             return StateVectorExactificationResult(
@@ -29,13 +37,13 @@ public enum StateVectorExactificationAdapter {
 
         var metadata: [Int: ExactificationMetadata] = [:]
         let coefficients = ket.coefficients.enumerated().map { index, coefficient in
-            let exactified = ScalarExactificationAdapter.exactify(
-                coefficient,
-                label: "\(label).c\(index)",
-                config: config
+            let exactified = cache?.exactify(coefficient, config: config)
+                ?? ScalarExactificationAdapter.fastExactify(coefficient, config: config)
+            metadata[index] = ExactificationMetadata(
+                status: exactified.isApproximate ? .approximateRetained : .verifiedExact,
+                witness: nil
             )
-            metadata[index] = metadataFor(outcome: exactified.outcome)
-            return exactified.scalar
+            return exactified
         }
 
         guard let exactifiedKet = try? Ket(
@@ -236,11 +244,10 @@ private enum KnownStateExactifier {
         let basis = try Basis(space: space, factorKinds: lhs.basis.factorKinds + rhs.basis.factorKinds)
         let coefficients = lhs.coefficients.flatMap { lhsScalar in
             rhs.coefficients.map { rhsScalar in
-                ScalarExactificationAdapter.exactify(
+                ScalarExactificationAdapter.fastExactify(
                     lhsScalar * rhsScalar,
-                    label: "known.tensor",
                     config: config
-                ).scalar
+                )
             }
         }
         return try Ket(space: space, basis: basis, coefficients: coefficients)
@@ -295,19 +302,6 @@ private enum KnownStateExactifier {
                 return "\(value.re),\(value.im)"
             }
         }.joined(separator: "|")
-    }
-}
-
-private func metadataFor(
-    outcome: ExactificationOutcome<QuantumVerificationWitness>
-) -> ExactificationMetadata {
-    switch outcome {
-    case let .exact(_, witness):
-        return ExactificationMetadata(status: .verifiedExact, witness: witness)
-    case let .mixed(_, witness, _):
-        return ExactificationMetadata(status: .verifiedExact, witness: witness)
-    case let .unresolved(reason):
-        return ExactificationMetadata(status: .unresolved(reason), witness: nil)
     }
 }
 

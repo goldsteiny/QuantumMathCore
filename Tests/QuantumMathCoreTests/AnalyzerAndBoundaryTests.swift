@@ -158,6 +158,17 @@ struct AnalyzerAndBoundaryTests {
 
         #expect(spectralResult.decomposition.components.count == 2)
         #expect(svdResult.decomposition.components.count == 2)
+        #expect(spectralResult.decomposition.components.allSatisfy { $0.eigenvalue.isApproximate })
+        #expect(spectralResult.decomposition.components.allSatisfy { component in
+            component.eigenvectors.contains { vector in
+                vector.coefficients.contains(where: \.isApproximate)
+            }
+        })
+        #expect(svdResult.decomposition.components.allSatisfy { $0.singularValue.isApproximate })
+        #expect(svdResult.decomposition.components.allSatisfy { component in
+            component.leftVector.coefficients.contains(where: \.isApproximate)
+                || component.rightVector.coefficients.contains(where: \.isApproximate)
+        })
     }
 
     @Test

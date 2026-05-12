@@ -64,9 +64,11 @@ public extension QuantumDomain {
     }
 
     static func innerProduct(_ bra: Bra, _ ket: Ket) throws -> Scalar {
-        guard bra.space.isCoordinateCompatible(with: ket.space),
-              bra.basis.isCoordinateCompatible(with: ket.basis) else {
+        guard bra.space.isCoordinateCompatible(with: ket.space) else {
             throw QuantumMathError.incompatibleSpaces(expected: bra.space, actual: ket.space)
+        }
+        guard bra.basis.isCoordinateCompatible(with: ket.basis) else {
+            throw QuantumMathError.incompatibleBases(lhs: bra.basis, rhs: ket.basis)
         }
         return zip(bra.coefficients, ket.coefficients).reduce(.zero) { partial, pair in
             partial + (pair.0 * pair.1)

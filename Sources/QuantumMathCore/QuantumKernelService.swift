@@ -79,15 +79,18 @@ public struct QuantumKernelService: Sendable {
     public let config: QuantumMathConfig
     public let backends: QuantumMathBackends
     public let backendID: String
+    public let exactificationCache: QuantumExactificationCache
 
     public init(
         config: QuantumMathConfig,
         backends: QuantumMathBackends,
-        backendID: String = "quantum.backends.default"
+        backendID: String = "quantum.backends.default",
+        exactificationCache: QuantumExactificationCache = QuantumExactificationCache()
     ) {
         self.config = config
         self.backends = backends
         self.backendID = backendID
+        self.exactificationCache = exactificationCache
     }
 
     public var configID: String {
@@ -96,7 +99,8 @@ public struct QuantumKernelService: Sendable {
             "matrix=\(config.matrixTraitEpsilon)",
             "scalar=\(config.scalarComparisonEpsilon)",
             "spectral=\(config.spectralResidualThreshold)",
-            "svd=\(config.svdResidualThreshold)"
+            "svd=\(config.svdResidualThreshold)",
+            "exact=\(config.exactificationPolicy.candidateDistanceThreshold)"
         ].joined(separator: ";")
     }
 
@@ -114,6 +118,10 @@ public struct QuantumKernelService: Sendable {
 
     public var measurementAnalyzer: MeasurementAnalyzer {
         MeasurementAnalyzer(config: config, spectralAnalyzer: spectralAnalyzer)
+    }
+
+    public var resultExactifier: QuantumResultExactifier {
+        QuantumResultExactifier(config: config, cache: exactificationCache)
     }
 
     public func evaluate(

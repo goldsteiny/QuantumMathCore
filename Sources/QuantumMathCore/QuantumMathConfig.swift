@@ -34,6 +34,17 @@ public struct QuantumMathConfig: Hashable, Sendable, Codable {
         self.exactificationPolicy = exactificationPolicy
     }
 
+    public static let ketStepsExactificationPolicy = ExactificationPolicy(
+        enabledFamilies: ["rational", "radical", "complex", "rootOfUnity"],
+        maxCandidatesPerVariable: 32,
+        maxSearchNodes: 10_000,
+        maxAcceptedSolutionsTracked: 4,
+        candidateDistanceThreshold: 2.5e-7,
+        mixedOutcomePolicy: .allowDomainDefined,
+        ambiguityPolicy: .unresolved,
+        wallClockAbortPolicy: .disabled
+    )
+
     public static let ketStepsDefault = QuantumMathConfig(
         maxComputableDimension: 16,
         matrixTraitEpsilon: 1e-9,
@@ -43,7 +54,7 @@ public struct QuantumMathConfig: Hashable, Sendable, Codable {
         projectorDistanceThreshold: 1e-6,
         normThreshold: 1e-10,
         orthogonalityThreshold: 1e-10,
-        exactificationPolicy: .default
+        exactificationPolicy: ketStepsExactificationPolicy
     )
 
     public static let ketStepsQutrit27Preview = QuantumMathConfig(
@@ -55,6 +66,6 @@ public struct QuantumMathConfig: Hashable, Sendable, Codable {
         projectorDistanceThreshold: 1e-6,
         normThreshold: 1e-10,
         orthogonalityThreshold: 1e-10,
-        exactificationPolicy: .default
+        exactificationPolicy: ketStepsExactificationPolicy
     )
 }

@@ -43,6 +43,25 @@ public struct ScalarExactificationResult: Sendable, Codable {
 }
 
 public enum ScalarExactificationAdapter {
+    public static func fastExactify(
+        _ scalar: Scalar,
+        config: QuantumMathConfig
+    ) -> Scalar {
+        guard scalar.exactValue == nil else {
+            return scalar
+        }
+
+        let approximate = scalar.approximateValue
+        guard approximate.re.isFinite, approximate.im.isFinite,
+              let exact = fastScalarExpression(
+                near: approximate,
+                threshold: exactificationThreshold(config)
+              ) else {
+            return scalar
+        }
+        return .exact(exact)
+    }
+
     public static func exactify(
         _ scalar: Scalar,
         label: String,
@@ -56,6 +75,33 @@ public enum ScalarExactificationAdapter {
             return ScalarExactificationResult(
                 scalar: scalar,
                 outcome: .unresolved(.nonFiniteInput([atomID]))
+            )
+        }
+
+        if let exact = scalar.exactValue {
+            return verifiedResult(
+                scalar: .exact(exact),
+                expression: exact,
+                residual: 0,
+                threshold: exactificationThreshold(config),
+                atomID: atomID,
+                variableID: variableID
+            )
+        }
+
+        if let exact = fastScalarExpression(
+            near: approximate,
+            threshold: exactificationThreshold(config)
+        ) {
+            let recovered = exact.approximateValue
+            let residual = max(abs(recovered.re - approximate.re), abs(recovered.im - approximate.im))
+            return verifiedResult(
+                scalar: .exact(exact),
+                expression: exact,
+                residual: residual,
+                threshold: exactificationThreshold(config),
+                atomID: atomID,
+                variableID: variableID
             )
         }
 
@@ -135,7 +181,7 @@ public enum ScalarExactificationAdapter {
         }
 
         let context = ScalarVerificationContext(
-            threshold: config.spectralResidualThreshold,
+            threshold: exactificationThreshold(config),
             verifierID: "quantum.scalar.v1"
         )
 
@@ -164,6 +210,93 @@ public enum ScalarExactificationAdapter {
         }
     }
 
+    private static func exactificationThreshold(_ config: QuantumMathConfig) -> Double {
+        config.exactificationPolicy.candidateDistanceThreshold
+    }
+
+    private static func fastScalarExpression(
+        near target: ComplexApproximation,
+        threshold: Double
+    ) -> ExactScalarExpression? {
+        if abs(target.im) <= threshold {
+            return bestRealExpression(near: target.re, breadth: .broad, threshold: threshold)
+                .map { scalarExpression(for: $0) }
+        }
+
+        if abs(target.re) <= threshold,
+           let imaginary = bestRealExpression(near: target.im, breadth: .compact, threshold: threshold) {
+            return ExactScalarExpression
+                .complex(real: .rational(.zero), imag: imaginary)
+                .canonicalized
+        }
+
+        guard let real = bestRealExpression(near: target.re, breadth: .compact, threshold: threshold),
+              let imaginary = bestRealExpression(near: target.im, breadth: .compact, threshold: threshold) else {
+            return nil
+        }
+        return ExactScalarExpression.complex(real: real, imag: imaginary).canonicalized
+    }
+
+    private static func bestRealExpression(
+        near value: Double,
+        breadth: CandidateBreadth,
+        threshold: Double
+    ) -> ExactRealExpression? {
+        realExpressions(near: value, breadth: breadth)
+            .filter { abs($0.approximateValue - value) <= threshold }
+            .sorted { lhs, rhs in
+                if lhs.expressionNodeCount != rhs.expressionNodeCount {
+                    return lhs.expressionNodeCount < rhs.expressionNodeCount
+                }
+                let lhsDenominator = denominatorMagnitude(in: lhs)
+                let rhsDenominator = denominatorMagnitude(in: rhs)
+                if lhsDenominator != rhsDenominator {
+                    return lhsDenominator < rhsDenominator
+                }
+                let lhsRadicand = radicandMagnitude(in: lhs)
+                let rhsRadicand = radicandMagnitude(in: rhs)
+                if lhsRadicand != rhsRadicand {
+                    return lhsRadicand < rhsRadicand
+                }
+                return lhs.canonicalKey < rhs.canonicalKey
+            }
+            .first
+    }
+
+    private static func verifiedResult(
+        scalar: Scalar,
+        expression: ExactScalarExpression,
+        residual: Double,
+        threshold: Double,
+        atomID: ApproximateAtomID,
+        variableID: RecoveryVariableID
+    ) -> ScalarExactificationResult {
+        let binding = CandidateBinding(
+            variableID: variableID,
+            atomReplacements: [
+                AtomReplacement(atomID: atomID, expression: expression)
+            ],
+            provenance: CandidateProvenance(providerID: "quantum.scalar.fast", family: familyName(for: expression)),
+            complexity: complexity(for: expression),
+            numericDistance: CandidateDistance(residual),
+            canonicalKey: CandidateCanonicalKey(expression.canonicalKey)
+        )
+        let assignment = ExactificationAssignment(bindings: [binding])
+        let witness = QuantumVerificationWitness(
+            evaluatedConstraints: [VerificationConstraintTag("scalar-distance")],
+            maxResidual: residual,
+            maxThreshold: threshold,
+            exactifiedVariables: [variableID],
+            approximateVariables: [],
+            selectedCanonicalKeys: [binding.canonicalKey],
+            verifierID: "quantum.scalar.fast.v1"
+        )
+        return ScalarExactificationResult(
+            scalar: scalar,
+            outcome: .exact(assignment, witness: witness)
+        )
+    }
+
     private static func candidates(
         for atom: ApproximateAtom,
         variableID: RecoveryVariableID,
@@ -176,10 +309,10 @@ public enum ScalarExactificationAdapter {
         expressions.append(.rational(.one))
 
         if abs(target.im) <= threshold {
-            expressions.append(contentsOf: realExpressions(near: target.re).map { scalarExpression(for: $0) })
+            expressions.append(contentsOf: realExpressions(near: target.re, breadth: .broad).map { scalarExpression(for: $0) })
         } else {
-            let realCandidates = realExpressions(near: target.re)
-            let imaginaryCandidates = realExpressions(near: target.im)
+            let realCandidates = realExpressions(near: target.re, breadth: .compact)
+            let imaginaryCandidates = realExpressions(near: target.im, breadth: .compact)
             for real in realCandidates {
                 for imaginary in imaginaryCandidates {
                     expressions.append(.complex(real: real, imag: imaginary))
@@ -225,10 +358,28 @@ public enum ScalarExactificationAdapter {
         return deduped
     }
 
-    private static func realExpressions(near value: Double) -> [ExactRealExpression] {
+    private enum CandidateBreadth {
+        case compact
+        case broad
+    }
+
+    private static func realExpressions(near value: Double, breadth: CandidateBreadth) -> [ExactRealExpression] {
         var expressions: [ExactRealExpression] = [.rational(.zero)]
 
-        let rationalDenominators = [1, 2, 3, 4, 6, 8, 12, 16]
+        let rationalDenominators: [Int]
+        let candidateRadicands: [Int]
+        let radicalDenominators: [Int]
+        switch breadth {
+        case .compact:
+            rationalDenominators = [1, 2, 3, 4, 6, 8, 12]
+            candidateRadicands = [2, 3, 5]
+            radicalDenominators = [1, 2, 3, 4, 6, 8, 12]
+        case .broad:
+            rationalDenominators = [1, 2, 3, 4, 6, 8, 9, 12, 16, 18, 27, 54, 81, 162]
+            candidateRadicands = [2, 3, 5, 7, 11, 13, 17]
+            radicalDenominators = [1, 2, 3, 4, 6, 8, 9, 12, 16, 18]
+        }
+
         for denominator in rationalDenominators {
             let center = Int((value * Double(denominator)).rounded())
             for delta in -1...1 {
@@ -236,8 +387,6 @@ public enum ScalarExactificationAdapter {
             }
         }
 
-        let candidateRadicands = [2, 3, 5]
-        let radicalDenominators = [1, 2, 3, 4, 6, 8, 12]
         for radicand in candidateRadicands {
             let root = Foundation.sqrt(Double(radicand))
             for denominator in radicalDenominators {
