@@ -6,6 +6,7 @@ public enum QuantumAnalysisRequestKind: String, Hashable, Sendable, Codable {
     case traits
     case spectrum
     case svd
+    case entanglement
     case measurement
     case exportRender
 }
@@ -58,6 +59,7 @@ public enum QuantumAnalysisResult: Hashable, Sendable, Codable {
     case traits(Set<OperatorTrait>)
     case spectrum(SpectralAnalysisResult)
     case svd(SingularValueAnalysisResult)
+    case entanglement(BipartitePureStateAnalysis)
     case measurement(MeasurementAnalysisResult)
     case exportRender(String)
 }
@@ -116,6 +118,10 @@ public struct QuantumKernelService: Sendable {
         SingularValueAnalyzer(config: config, backend: backends.singularValueSolver)
     }
 
+    public var entanglementAnalyzer: EntanglementAnalyzer {
+        EntanglementAnalyzer(config: config, backend: backends.singularValueSolver)
+    }
+
     public var measurementAnalyzer: MeasurementAnalyzer {
         MeasurementAnalyzer(config: config, spectralAnalyzer: spectralAnalyzer)
     }
@@ -167,6 +173,20 @@ public struct QuantumKernelService: Sendable {
         QuantumAnalysisEnvelope(
             identity: analysisIdentity(inputID: inputID, requestKind: .svd),
             result: .svd(try analyzeSVD(operatorValue))
+        )
+    }
+
+    public func analyzeEntanglement(_ state: Ket) throws -> BipartitePureStateAnalysis {
+        try entanglementAnalyzer.analyzeBipartitePureState(state)
+    }
+
+    public func analyzeEntanglement(
+        inputID: String,
+        _ state: Ket
+    ) throws -> QuantumAnalysisEnvelope {
+        QuantumAnalysisEnvelope(
+            identity: analysisIdentity(inputID: inputID, requestKind: .entanglement),
+            result: .entanglement(try analyzeEntanglement(state))
         )
     }
 

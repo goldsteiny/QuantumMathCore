@@ -678,6 +678,59 @@ public extension QuantumDomain {
         )
     }
 
+    static func denseCommunicationTranscript(
+        resource: MaximallyEntangledResource,
+        message: WeylMessage,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) throws -> DenseCommunicationTranscript {
+        guard message.dimension == resource.dimension else {
+            throw QuantumMathError.operationNotDefined(
+                "Dense communication message dimension must match the resource dimension."
+            )
+        }
+
+        let unitaryBasis = try weylUnitaryErrorBasis(dimension: resource.dimension, config: config)
+        let encodingElement = try unitaryBasis.element(for: message.index)
+        let liftedEncoding = try liftOneFactorOperator(
+            encodingElement.operatorValue,
+            toRawFactorOffset: 0,
+            in: resource.state.space,
+            config: config
+        )
+        let encodedState = try applyOperator(liftedEncoding, resource.state)
+        let measurementBasis = try resourceRelativeWeylBellBasis(resource: resource, config: config)
+        guard let decodedIndex = matchingBellIndex(
+            for: encodedState,
+            in: measurementBasis,
+            config: config
+        ) else {
+            throw QuantumMathError.operationNotDefined("Dense communication state could not be decoded.")
+        }
+
+        let decodedMessage = WeylMessage(index: decodedIndex)
+        let measurementElement = try measurementBasis.element(for: decodedIndex)
+        let succeeded = decodedMessage == message
+
+        return DenseCommunicationTranscript(
+            resource: resource,
+            message: message,
+            aliceEncodingOperation: encodingElement.operatorValue,
+            liftedEncodingOperation: liftedEncoding,
+            encodedJointState: encodedState,
+            measurementBasis: measurementBasis,
+            bobMeasurementState: measurementElement.state,
+            bobMeasurementProjector: measurementElement.projector,
+            decodedMessage: decodedMessage,
+            verification: ProtocolVerification(
+                succeeded: succeeded,
+                metric: succeeded ? .one : .zero,
+                message: succeeded
+                    ? "Decoded message matches Alice's message."
+                    : "Decoded message does not match Alice's message."
+            )
+        )
+    }
+
     static func teleportationScheme(
         inputState: Ket,
         config: QuantumMathConfig = .ketStepsDefault
@@ -744,6 +797,114 @@ public extension QuantumDomain {
             outcomes: outcomes
         )
     }
+
+    static func teleportationTranscript(
+        inputState: Ket,
+        resource: MaximallyEntangledResource,
+        outcome: BellOutcome,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) throws -> TeleportationTranscript {
+        guard inputState.space.factors.count == 1,
+              inputState.space.dimension == resource.dimension else {
+            throw QuantumMathError.operationNotDefined(
+                "Teleportation input dimension must match the resource dimension."
+            )
+        }
+        guard inputState.basis.isComputationalCoordinateBasis else {
+            throw QuantumMathError.operationNotDefined(
+                "Teleportation input must use computational-coordinate basis."
+            )
+        }
+        guard outcome.dimension == resource.dimension else {
+            throw QuantumMathError.operationNotDefined(
+                "Teleportation outcome dimension must match the resource dimension."
+            )
+        }
+        try requireNormalized(inputState, config: config, purpose: "Teleportation input")
+
+        let initialState = try tensor(inputState, resource.state, config: config)
+        let measurementBasis = try resourceRelativeWeylBellBasis(resource: resource, config: config)
+        let measurementElement = try measurementBasis.element(for: outcome.index)
+        let transform = try bobProjectionTransform(
+            measurementState: measurementElement.state,
+            resourceState: resource.state,
+            dimension: resource.dimension
+        )
+        let preCorrectionCoefficients = try transform.multiplied(by: inputState.coefficients)
+        let probabilityValue = preCorrectionCoefficients.reduce(0.0) { partial, coefficient in
+            partial + coefficient.magnitudeSquaredApproximate
+        }
+        guard probabilityValue > config.normThreshold else {
+            throw QuantumMathError.operationNotDefined(
+                "Selected teleportation branch has zero probability."
+            )
+        }
+
+        let branchNorm = Scalar.approx(ComplexNumber(re: Foundation.sqrt(probabilityValue), im: 0))
+        let normalizedPreCorrection = try preCorrectionCoefficients.map { coefficient -> Scalar in
+            guard let normalized = coefficient.divided(by: branchNorm) else {
+                throw QuantumMathError.operationNotDefined("Teleportation branch could not be normalized.")
+            }
+            return normalized
+        }
+        let bobStateBeforeCorrection = try Ket(
+            space: inputState.space,
+            basis: inputState.basis,
+            coefficients: normalizedPreCorrection
+        )
+        let correctionScale = Scalar.approx(ComplexNumber(re: Double(resource.dimension), im: 0))
+        let correctionOperation = try Operator(
+            domain: inputState.space,
+            codomain: inputState.space,
+            columnBasis: inputState.basis,
+            rowBasis: inputState.basis,
+            entries: transform.conjugateTransposed().scaled(by: correctionScale)
+        )
+        let bobStateAfterCorrection = try normalize(
+            applyOperator(correctionOperation, bobStateBeforeCorrection),
+            config: config
+        )
+        let fullStateAfterMeasurement = try tensor(
+            measurementElement.state,
+            bobStateBeforeCorrection,
+            config: config
+        )
+        let fullStateAfterCorrection = try tensor(
+            measurementElement.state,
+            bobStateAfterCorrection,
+            config: config
+        )
+        let overlap = try innerProduct(inputState, bobStateAfterCorrection)
+        let overlapMagnitude = Scalar.approx(ComplexNumber(re: overlap.magnitudeSquaredApproximate, im: 0))
+        let succeeded = sameProjectiveRay(
+            bobStateAfterCorrection,
+            inputState,
+            epsilon: config.scalarComparisonEpsilon
+        )
+
+        return TeleportationTranscript(
+            inputState: inputState,
+            resource: resource,
+            initialState: initialState,
+            outcome: outcome,
+            measurementBasis: measurementBasis,
+            measurementState: measurementElement.state,
+            measurementProjector: measurementElement.projector,
+            probability: Scalar.approx(ComplexNumber(re: probabilityValue, im: 0)),
+            bobStateBeforeCorrection: bobStateBeforeCorrection,
+            correctionOperation: correctionOperation,
+            bobStateAfterCorrection: bobStateAfterCorrection,
+            fullStateAfterMeasurement: fullStateAfterMeasurement,
+            fullStateAfterCorrection: fullStateAfterCorrection,
+            verification: ProtocolVerification(
+                succeeded: succeeded,
+                metric: overlapMagnitude,
+                message: succeeded
+                    ? "Bob's corrected state matches the input up to global phase."
+                    : "Bob's corrected state does not match the input."
+            )
+        )
+    }
 }
 
 private extension QuantumDomain {
@@ -787,6 +948,33 @@ private extension QuantumDomain {
         }
     }
 
+    static func resourceRelativeWeylBellBasis(
+        resource: MaximallyEntangledResource,
+        config: QuantumMathConfig
+    ) throws -> WeylBellBasis {
+        let unitaryBasis = try weylUnitaryErrorBasis(dimension: resource.dimension, config: config)
+        let elements = try unitaryBasis.elements.map { element -> WeylBellBasisElement in
+            let lifted = try liftOneFactorOperator(
+                element.operatorValue,
+                toRawFactorOffset: 0,
+                in: resource.state.space,
+                config: config
+            )
+            let state = try applyOperator(lifted, resource.state)
+            let projector = try outerProduct(state, dagger(state))
+            return WeylBellBasisElement(
+                index: element.index,
+                state: state,
+                projector: projector
+            )
+        }
+        return try WeylBellBasis(
+            dimension: resource.dimension,
+            basis: resource.state.basis,
+            elements: elements
+        )
+    }
+
     static func matchingBellIndex(
         for state: Ket,
         in bellBasis: WeylBellBasis,
@@ -799,6 +987,31 @@ private extension QuantumDomain {
                 epsilon: config.scalarComparisonEpsilon
             )
         }?.index
+    }
+
+    static func bobProjectionTransform(
+        measurementState: Ket,
+        resourceState: Ket,
+        dimension: Int
+    ) throws -> Matrix<Scalar> {
+        let values = try (0..<dimension).flatMap { bobIndex in
+            try (0..<dimension).map { inputIndex in
+                try (0..<dimension).reduce(Scalar.zero) { partial, aliceIndex in
+                    let measurementFlat = try TensorIndexing.flatten(
+                        indices: [inputIndex, aliceIndex],
+                        factorDimensions: [dimension, dimension]
+                    )
+                    let resourceFlat = try TensorIndexing.flatten(
+                        indices: [aliceIndex, bobIndex],
+                        factorDimensions: [dimension, dimension]
+                    )
+                    return partial
+                        + measurementState.coefficients[measurementFlat].conjugated
+                        * resourceState.coefficients[resourceFlat]
+                }
+            }
+        }
+        return try Matrix(rows: dimension, cols: dimension, values: values)
     }
 
     static func sameProjectiveRay(_ lhs: Ket, _ rhs: Ket, epsilon: Double) -> Bool {
