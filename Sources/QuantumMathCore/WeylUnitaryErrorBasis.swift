@@ -699,6 +699,7 @@ public extension QuantumDomain {
         )
         let encodedState = try applyOperator(liftedEncoding, resource.state)
         let measurementBasis = try resourceRelativeWeylBellBasis(resource: resource, config: config)
+        let measurementObservable = try bellMeasurementObservable(for: measurementBasis)
         guard let decodedIndex = matchingBellIndex(
             for: encodedState,
             in: measurementBasis,
@@ -718,6 +719,7 @@ public extension QuantumDomain {
             liftedEncodingOperation: liftedEncoding,
             encodedJointState: encodedState,
             measurementBasis: measurementBasis,
+            bobMeasurementObservable: measurementObservable,
             bobMeasurementState: measurementElement.state,
             bobMeasurementProjector: measurementElement.projector,
             decodedMessage: decodedMessage,
@@ -795,6 +797,55 @@ public extension QuantumDomain {
             initialState: initialState,
             measurementBasis: measurementBasis,
             outcomes: outcomes
+        )
+    }
+
+    static func bellMeasurementObservable(for bellBasis: WeylBellBasis) throws -> Operator {
+        guard let firstProjector = bellBasis.elements.first?.projector else {
+            throw QuantumMathError.operationNotDefined("Bell measurement basis is empty.")
+        }
+        let entries = try bellBasis.elements.reduce(
+            Array(repeating: Scalar.zero, count: firstProjector.entries.values.count)
+        ) { partial, element in
+            guard firstProjector.domain == element.projector.domain else {
+                throw QuantumMathError.incompatibleSpaces(
+                    expected: firstProjector.domain,
+                    actual: element.projector.domain
+                )
+            }
+            guard firstProjector.codomain == element.projector.codomain else {
+                throw QuantumMathError.incompatibleSpaces(
+                    expected: firstProjector.codomain,
+                    actual: element.projector.codomain
+                )
+            }
+            guard firstProjector.columnBasis == element.projector.columnBasis else {
+                throw QuantumMathError.incompatibleBases(
+                    lhs: firstProjector.columnBasis,
+                    rhs: element.projector.columnBasis
+                )
+            }
+            guard firstProjector.rowBasis == element.projector.rowBasis else {
+                throw QuantumMathError.incompatibleBases(
+                    lhs: firstProjector.rowBasis,
+                    rhs: element.projector.rowBasis
+                )
+            }
+            let weight = Scalar(real: Rational(element.index.flatIndex))
+            return zip(partial, element.projector.entries.values).map { sum, value in
+                sum + (weight * value)
+            }
+        }
+        return try Operator(
+            domain: firstProjector.domain,
+            codomain: firstProjector.codomain,
+            columnBasis: firstProjector.columnBasis,
+            rowBasis: firstProjector.rowBasis,
+            entries: try Matrix(
+                rows: firstProjector.entries.rows,
+                cols: firstProjector.entries.cols,
+                values: entries
+            )
         )
     }
 

@@ -209,6 +209,7 @@ public struct DenseCommunicationTranscript: Hashable, Sendable, Codable {
     public let liftedEncodingOperation: Operator
     public let encodedJointState: Ket
     public let measurementBasis: WeylBellBasis
+    public let bobMeasurementObservable: Operator
     public let bobMeasurementState: Ket
     public let bobMeasurementProjector: Operator
     public let decodedMessage: WeylMessage
@@ -221,6 +222,7 @@ public struct DenseCommunicationTranscript: Hashable, Sendable, Codable {
         liftedEncodingOperation: Operator,
         encodedJointState: Ket,
         measurementBasis: WeylBellBasis,
+        bobMeasurementObservable: Operator,
         bobMeasurementState: Ket,
         bobMeasurementProjector: Operator,
         decodedMessage: WeylMessage,
@@ -232,6 +234,7 @@ public struct DenseCommunicationTranscript: Hashable, Sendable, Codable {
         self.liftedEncodingOperation = liftedEncodingOperation
         self.encodedJointState = encodedJointState
         self.measurementBasis = measurementBasis
+        self.bobMeasurementObservable = bobMeasurementObservable
         self.bobMeasurementState = bobMeasurementState
         self.bobMeasurementProjector = bobMeasurementProjector
         self.decodedMessage = decodedMessage
