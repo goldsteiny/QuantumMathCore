@@ -7,6 +7,7 @@ public enum QuantumAnalysisRequestKind: String, Hashable, Sendable, Codable {
     case spectrum
     case svd
     case entanglement
+    case schmidt
     case measurement
     case exportRender
 }
@@ -60,6 +61,7 @@ public enum QuantumAnalysisResult: Hashable, Sendable, Codable {
     case spectrum(SpectralAnalysisResult)
     case svd(SingularValueAnalysisResult)
     case entanglement(BipartitePureStateAnalysis)
+    case schmidt(SchmidtDecompositionAnalysis)
     case measurement(MeasurementAnalysisResult)
     case exportRender(String)
 }
@@ -187,6 +189,29 @@ public struct QuantumKernelService: Sendable {
         QuantumAnalysisEnvelope(
             identity: analysisIdentity(inputID: inputID, requestKind: .entanglement),
             result: .entanglement(try analyzeEntanglement(state))
+        )
+    }
+
+    public func analyzeSchmidtDecomposition(
+        _ state: Ket,
+        partition: SchmidtFactorPartition
+    ) throws -> SchmidtDecompositionAnalysis {
+        try entanglementAnalyzer.analyzeSchmidtDecomposition(state, partition: partition)
+    }
+
+    public func analyzeSchmidtDecomposition(
+        inputID: String,
+        _ state: Ket,
+        partition: SchmidtFactorPartition
+    ) throws -> QuantumAnalysisEnvelope {
+        QuantumAnalysisEnvelope(
+            identity: analysisIdentity(inputID: inputID, requestKind: .schmidt),
+            result: .schmidt(
+                try analyzeSchmidtDecomposition(
+                    state,
+                    partition: partition
+                )
+            )
         )
     }
 
