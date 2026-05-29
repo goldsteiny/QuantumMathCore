@@ -289,7 +289,7 @@ public extension QuantumDomain {
                 "Mixed state creation requires at least two state vectors."
             )
         }
-        for ket in kets.dropFirst() {
+        try kets.dropFirst().forEach { ket in
             try requireSameSpace(firstKet.space, ket.space)
             try requireSameBasis(firstKet.basis, ket.basis)
         }
@@ -307,6 +307,115 @@ public extension QuantumDomain {
             rowBasis: firstKet.basis,
             entries: entries
         )
+    }
+
+    static func densityOperator(
+        fromBlochVector vector: QubitBlochVector,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) throws -> Operator {
+        let epsilon = config.scalarComparisonEpsilon
+        guard let x = realFiniteComponent(vector.x, epsilon: epsilon),
+              let y = realFiniteComponent(vector.y, epsilon: epsilon),
+              let z = realFiniteComponent(vector.z, epsilon: epsilon) else {
+            throw QuantumMathError.operationNotDefined(
+                "Bloch vectors require finite real x, y, and z coordinates."
+            )
+        }
+
+        let radiusSquared = (x * x) + (y * y) + (z * z)
+        guard radiusSquared <= 1 + epsilon else {
+            throw QuantumMathError.operationNotDefined(
+                "Bloch vector radius must satisfy x^2 + y^2 + z^2 <= 1."
+            )
+        }
+
+        let half = Scalar(real: Rational(1, 2))
+        let xScalar = Scalar.approx(ComplexNumber(re: x, im: 0))
+        let yScalar = Scalar.approx(ComplexNumber(re: y, im: 0))
+        let zScalar = Scalar.approx(ComplexNumber(re: z, im: 0))
+
+        let rho00 = half * (Scalar.one + zScalar)
+        let rho11 = half * (Scalar.one - zScalar)
+        let rho01 = half * (xScalar - (Scalar.i * yScalar))
+        let rho10 = half * (xScalar + (Scalar.i * yScalar))
+
+        let qubitSpace = Space.atomic(.qubit)
+        let basis = Basis.computational(for: qubitSpace)
+
+        return try Operator(
+            domain: qubitSpace,
+            codomain: qubitSpace,
+            columnBasis: basis,
+            rowBasis: basis,
+            entries: try Matrix(rows: 2, cols: 2, values: [rho00, rho01, rho10, rho11])
+        )
+    }
+
+    static func ket(
+        fromBlochAngles angles: QubitBlochAngles,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) throws -> Ket {
+        let epsilon = config.scalarComparisonEpsilon
+        guard let theta = realFiniteComponent(angles.thetaRadians, epsilon: epsilon),
+              let phi = realFiniteComponent(angles.phiRadians, epsilon: epsilon) else {
+            throw QuantumMathError.operationNotDefined(
+                "Bloch angles require finite real theta and phi values."
+            )
+        }
+
+        let halfTheta = theta / 2
+        let alpha = Scalar.approx(ComplexNumber(re: Foundation.cos(halfTheta), im: 0))
+        let betaMagnitude = Foundation.sin(halfTheta)
+        let beta = Scalar.approx(
+            ComplexNumber(
+                re: betaMagnitude * Foundation.cos(phi),
+                im: betaMagnitude * Foundation.sin(phi)
+            )
+        )
+
+        let qubitSpace = Space.atomic(.qubit)
+        let basis = Basis.computational(for: qubitSpace)
+        return try Ket(space: qubitSpace, basis: basis, coefficients: [alpha, beta])
+    }
+
+    static func bra(
+        fromBlochAngles angles: QubitBlochAngles,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) throws -> Bra {
+        try dagger(ket(fromBlochAngles: angles, config: config))
+    }
+
+    static func blochVector(
+        for ket: Ket,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) -> QubitBlochVector? {
+        guard ket.space == .atomic(.qubit),
+              ket.basis == .computational(for: ket.space),
+              abs(normSquared(ket) - 1) <= config.scalarComparisonEpsilon else {
+            return nil
+        }
+
+        return qubitBlochVector(forNormalizedCoefficients: ket.coefficients)
+    }
+
+    static func blochVector(
+        for bra: Bra,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) -> QubitBlochVector? {
+        guard let ket = try? dagger(bra) else {
+            return nil
+        }
+        return blochVector(for: ket, config: config)
+    }
+
+    static func blochVector(
+        for operatorValue: Operator,
+        config: QuantumMathConfig = .ketStepsDefault
+    ) -> QubitBlochVector? {
+        guard case let .density(summary) = operatorSemantics(operatorValue, config: config) else {
+            return nil
+        }
+        return summary.qubitBlochVector
     }
 
     static func commutator(_ lhs: Operator, _ rhs: Operator) throws -> Operator {
@@ -799,7 +908,7 @@ private extension QuantumDomain {
         return DensityOperatorSummary(
             purity: purity,
             recoveredKet: recoveredKet,
-            qubitBlochVector: qubitBlochVector(for: operatorValue, purity: purity)
+            qubitBlochVector: qubitBlochVector(for: operatorValue)
         )
     }
 
@@ -852,12 +961,8 @@ private extension QuantumDomain {
         return .approx(ComplexNumber(re: Foundation.sqrt(max(approximate.re, 0)), im: 0))
     }
 
-    static func qubitBlochVector(
-        for operatorValue: Operator,
-        purity: DensityPurity
-    ) -> QubitBlochVector? {
-        guard purity == .mixed,
-              operatorValue.domain == .atomic(.qubit),
+    static func qubitBlochVector(for operatorValue: Operator) -> QubitBlochVector? {
+        guard operatorValue.domain == .atomic(.qubit),
               operatorValue.columnBasis == .computational(for: operatorValue.domain) else {
             return nil
         }
@@ -868,6 +973,33 @@ private extension QuantumDomain {
             y: Scalar.i * (offDiagonal - offDiagonal.conjugated),
             z: operatorValue.entries[0, 0] - operatorValue.entries[1, 1]
         )
+    }
+
+    static func qubitBlochVector(forNormalizedCoefficients coefficients: [Scalar]) -> QubitBlochVector? {
+        guard coefficients.count == 2 else {
+            return nil
+        }
+
+        let alpha = coefficients[0].approximateValue
+        let beta = coefficients[1].approximateValue
+        let alphaTimesBetaConjugate = alpha * beta.conjugated
+        let x = Scalar.approx(ComplexNumber(re: 2 * alphaTimesBetaConjugate.re, im: 0))
+        let y = Scalar.approx(ComplexNumber(re: 2 * alphaTimesBetaConjugate.im, im: 0))
+        let z = Scalar.approx(
+            ComplexNumber(
+                re: alpha.magnitudeSquared - beta.magnitudeSquared,
+                im: 0
+            )
+        )
+        return QubitBlochVector(x: x, y: y, z: z)
+    }
+
+    static func realFiniteComponent(_ scalar: Scalar, epsilon: Double) -> Double? {
+        let value = scalar.approximateValue
+        guard abs(value.im) <= epsilon, value.re.isFinite else {
+            return nil
+        }
+        return value.re
     }
 
     static func requireSameSpace(_ lhs: Space, _ rhs: Space) throws {

@@ -72,6 +72,16 @@ public struct QubitBlochVector: Hashable, Sendable, Codable {
     }
 }
 
+public struct QubitBlochAngles: Hashable, Sendable, Codable {
+    public let thetaRadians: Scalar
+    public let phiRadians: Scalar
+
+    public init(thetaRadians: Scalar, phiRadians: Scalar) {
+        self.thetaRadians = thetaRadians
+        self.phiRadians = phiRadians
+    }
+}
+
 public struct DensityOperatorSummary: Hashable, Sendable, Codable {
     public let purity: DensityPurity
     public let recoveredKet: Ket?
@@ -92,4 +102,3 @@ public enum OperatorSemantics: Hashable, Sendable, Codable {
     case generic(traits: Set<OperatorTrait>)
     case density(DensityOperatorSummary)
 }
-

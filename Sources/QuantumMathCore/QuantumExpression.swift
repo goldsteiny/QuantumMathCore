@@ -66,6 +66,12 @@ public struct QuantumWeightedSumExpression: Hashable, Sendable, Codable {
     }
 }
 
+public enum QubitBlochStateExpression: Hashable, Sendable, Codable {
+    case density(QubitBlochVector)
+    case ket(QubitBlochAngles)
+    case bra(QubitBlochAngles)
+}
+
 public enum QuantumExpression: Hashable, Sendable, Codable {
     case literal(QuantumValue)
     case reference(QuantumReferenceID)
@@ -78,6 +84,7 @@ public enum QuantumExpression: Hashable, Sendable, Codable {
     case mixedDensityState([QuantumWeightedSumTerm])
     case partialTrace(reference: QuantumReferenceID, selection: PartialTraceSelection)
     case explicitBasisConversion(reference: QuantumReferenceID, targetBasis: Basis)
+    case blochState(QubitBlochStateExpression)
 
     public var dependencyIDs: [QuantumReferenceID] {
         switch self {
@@ -103,6 +110,8 @@ public enum QuantumExpression: Hashable, Sendable, Codable {
             return [reference]
         case let .explicitBasisConversion(reference, _):
             return [reference]
+        case .blochState:
+            return []
         }
     }
 }
@@ -168,6 +177,24 @@ public struct QuantumOperation {
             return .oper(try QuantumDomain.partialTrace(operatorValue, tracing: selection))
         case let .explicitBasisConversion(reference, targetBasis):
             return try QuantumDomain.convert(resolver.resolve(reference), to: targetBasis)
+        case let .blochState(stateExpression):
+            switch stateExpression {
+            case let .density(vector):
+                return .oper(try QuantumDomain.densityOperator(
+                    fromBlochVector: vector,
+                    config: config
+                ))
+            case let .ket(angles):
+                return .ket(try QuantumDomain.ket(
+                    fromBlochAngles: angles,
+                    config: config
+                ))
+            case let .bra(angles):
+                return .bra(try QuantumDomain.bra(
+                    fromBlochAngles: angles,
+                    config: config
+                ))
+            }
         }
     }
 
