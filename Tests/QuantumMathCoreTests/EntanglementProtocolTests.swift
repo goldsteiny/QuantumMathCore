@@ -144,6 +144,41 @@ struct EntanglementProtocolTests {
     }
 
     @Test
+    func schmidtSpectrumOwnsEntanglementEntropyInBits() throws {
+        let product = try analyzer.analyzeBipartitePureState(
+            bipartiteKet(dimension: 2, diagonal: [.one, .zero])
+        )
+        let bell = try analyzer.analyzeBipartitePureState(
+            QuantumDomain.maximallyEntangledState(
+                dimension: 2,
+                config: .ketStepsQutrit27Preview
+            )
+        )
+        let qutritBell = try analyzer.analyzeBipartitePureState(
+            QuantumDomain.maximallyEntangledState(
+                dimension: 3,
+                config: .ketStepsQutrit27Preview
+            )
+        )
+        let rootThreeFifths = Scalar.approx(ComplexNumber(re: sqrt(3.0 / 5.0), im: 0))
+        let rootTwoFifths = Scalar.approx(ComplexNumber(re: sqrt(2.0 / 5.0), im: 0))
+        let nonMaximal = try analyzer.analyzeBipartitePureState(
+            bipartiteKet(
+                dimension: 2,
+                diagonal: [rootThreeFifths, rootTwoFifths]
+            )
+        )
+
+        let nonMaximalExpected = -((3.0 / 5.0) * log2(3.0 / 5.0))
+            - ((2.0 / 5.0) * log2(2.0 / 5.0))
+
+        #expect(product.entanglementEntropy.bits == 0)
+        #expect(abs(bell.entanglementEntropy.bits - 1) <= 1e-10)
+        #expect(abs(qutritBell.entanglementEntropy.bits - log2(3)) <= 1e-10)
+        #expect(abs(nonMaximal.entanglementEntropy.bits - nonMaximalExpected) <= 1e-10)
+    }
+
+    @Test
     func schmidtDecompositionSupportsFactorAwarePartitionsWithResidualAndSpectrumChecks() throws {
         let state = try threeQubitStateForABSplit()
         let partition = try SchmidtFactorPartition(leftRawOffsets: [0, 1])

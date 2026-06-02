@@ -76,15 +76,184 @@ public struct ReducedSpectrumRelation: Hashable, Sendable, Codable {
     }
 }
 
+public struct EntanglementEntropy: Hashable, Sendable, Codable {
+    public let bits: Double
+
+    public init(bits: Double, tolerance: Double = 1e-10) throws {
+        guard bits.isFinite else {
+            throw QuantumMathError.operationNotDefined("Entanglement entropy must be finite.")
+        }
+        guard bits >= -tolerance else {
+            throw QuantumMathError.operationNotDefined("Entanglement entropy cannot be negative.")
+        }
+
+        self.bits = abs(bits) <= tolerance ? 0 : bits
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        try self.init(bits: try container.decode(Double.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(bits)
+    }
+}
+
+public struct SchmidtSpectrum: Hashable, Sendable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case coefficients
+        case probabilities
+        case entropy
+    }
+
+    public let coefficients: [Scalar]
+    public let probabilities: [Scalar]
+    public let entropy: EntanglementEntropy
+
+    public var rank: Int {
+        coefficients.count
+    }
+
+    public init(
+        coefficients: [Scalar],
+        tolerance: Double = 1e-10
+    ) throws {
+        let rawProbabilities = try coefficients.map { coefficient in
+            try Self.probability(from: coefficient, tolerance: tolerance)
+        }
+        let normalizedProbabilities = try Self.normalizedProbabilities(
+            rawProbabilities,
+            coefficientCount: coefficients.count,
+            tolerance: tolerance
+        )
+
+        self.coefficients = coefficients
+        self.probabilities = Self.probabilityScalars(from: normalizedProbabilities)
+        self.entropy = try EntanglementEntropy(
+            bits: Self.entropyBits(from: normalizedProbabilities, tolerance: tolerance),
+            tolerance: tolerance
+        )
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(coefficients: try container.decode([Scalar].self, forKey: .coefficients))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(coefficients, forKey: .coefficients)
+        try container.encode(probabilities, forKey: .probabilities)
+        try container.encode(entropy, forKey: .entropy)
+    }
+
+    private static func probability(
+        from coefficient: Scalar,
+        tolerance: Double
+    ) throws -> Double {
+        let approximate = coefficient.approximateValue
+        guard approximate.re.isFinite,
+              approximate.im.isFinite,
+              abs(approximate.im) <= tolerance,
+              approximate.re >= -tolerance else {
+            throw QuantumMathError.operationNotDefined("Schmidt coefficients must be finite non-negative reals.")
+        }
+
+        let sanitizedCoefficient = max(0, approximate.re)
+        return sanitizedCoefficient * sanitizedCoefficient
+    }
+
+    private static func normalizedProbabilities(
+        _ rawProbabilities: [Double],
+        coefficientCount: Int,
+        tolerance: Double
+    ) throws -> [Double] {
+        let probabilitySum = rawProbabilities.reduce(0, +)
+
+        guard probabilitySum.isFinite, probabilitySum > tolerance else {
+            throw QuantumMathError.operationNotDefined("Schmidt spectrum requires non-zero probability mass.")
+        }
+        guard abs(probabilitySum - 1) <= tolerance * Double(max(coefficientCount, 1)) else {
+            throw QuantumMathError.operationNotDefined("Schmidt spectrum probabilities must sum to one.")
+        }
+
+        return rawProbabilities.map { probability in
+            sanitizedProbability(probability / probabilitySum, tolerance: tolerance)
+        }
+    }
+
+    private static func probabilityScalars(from probabilities: [Double]) -> [Scalar] {
+        probabilities.map { probability in
+            Scalar.approx(ComplexNumber(re: probability, im: 0))
+        }
+    }
+
+    private static func entropyBits(
+        from probabilities: [Double],
+        tolerance: Double
+    ) -> Double {
+        probabilities.reduce(0.0) { partial, probability in
+            guard probability > tolerance else {
+                return partial
+            }
+            return partial - (probability * (Foundation.log(probability) / Foundation.log(2)))
+        }
+    }
+
+    private static func sanitizedProbability(
+        _ probability: Double,
+        tolerance: Double
+    ) -> Double {
+        if abs(probability) <= tolerance {
+            return 0
+        }
+        if abs(probability - 1) <= tolerance {
+            return 1
+        }
+        return probability
+    }
+}
+
 public struct SchmidtDecompositionAnalysis: Hashable, Sendable, Codable {
     public let state: Ket
     public let partition: ResolvedSchmidtFactorPartition
-    public let schmidtRank: Int
-    public let schmidtCoefficients: [Scalar]
+    public let spectrum: SchmidtSpectrum
     public let components: [SchmidtComponent]
     public let classification: EntanglementClassification
     public let reconstructionResidual: Double
     public let reducedSpectrumRelation: ReducedSpectrumRelation
+
+    public var schmidtRank: Int {
+        spectrum.rank
+    }
+
+    public var schmidtCoefficients: [Scalar] {
+        spectrum.coefficients
+    }
+
+    public var entanglementEntropy: EntanglementEntropy {
+        spectrum.entropy
+    }
+
+    public init(
+        state: Ket,
+        partition: ResolvedSchmidtFactorPartition,
+        spectrum: SchmidtSpectrum,
+        components: [SchmidtComponent],
+        classification: EntanglementClassification,
+        reconstructionResidual: Double,
+        reducedSpectrumRelation: ReducedSpectrumRelation
+    ) {
+        self.state = state
+        self.partition = partition
+        self.spectrum = spectrum
+        self.components = components
+        self.classification = classification
+        self.reconstructionResidual = reconstructionResidual
+        self.reducedSpectrumRelation = reducedSpectrumRelation
+    }
 
     public init(
         state: Ket,
@@ -96,23 +265,51 @@ public struct SchmidtDecompositionAnalysis: Hashable, Sendable, Codable {
         reconstructionResidual: Double,
         reducedSpectrumRelation: ReducedSpectrumRelation
     ) {
+        let spectrum = validatedSchmidtSpectrum(
+            schmidtRank: schmidtRank,
+            coefficients: schmidtCoefficients,
+            context: "Schmidt decomposition analysis"
+        )
         self.state = state
         self.partition = partition
-        self.schmidtRank = schmidtRank
-        self.schmidtCoefficients = schmidtCoefficients
+        self.spectrum = spectrum
         self.components = components
         self.classification = classification
         self.reconstructionResidual = reconstructionResidual
         self.reducedSpectrumRelation = reducedSpectrumRelation
     }
+
 }
 
 public struct SchmidtSummaryAnalysis: Hashable, Sendable, Codable {
     public let state: Ket
     public let partition: ResolvedSchmidtFactorPartition
-    public let schmidtRank: Int
-    public let schmidtCoefficients: [Scalar]
+    public let spectrum: SchmidtSpectrum
     public let classification: EntanglementClassification
+
+    public var schmidtRank: Int {
+        spectrum.rank
+    }
+
+    public var schmidtCoefficients: [Scalar] {
+        spectrum.coefficients
+    }
+
+    public var entanglementEntropy: EntanglementEntropy {
+        spectrum.entropy
+    }
+
+    public init(
+        state: Ket,
+        partition: ResolvedSchmidtFactorPartition,
+        spectrum: SchmidtSpectrum,
+        classification: EntanglementClassification
+    ) {
+        self.state = state
+        self.partition = partition
+        self.spectrum = spectrum
+        self.classification = classification
+    }
 
     public init(
         state: Ket,
@@ -121,21 +318,51 @@ public struct SchmidtSummaryAnalysis: Hashable, Sendable, Codable {
         schmidtCoefficients: [Scalar],
         classification: EntanglementClassification
     ) {
+        let spectrum = validatedSchmidtSpectrum(
+            schmidtRank: schmidtRank,
+            coefficients: schmidtCoefficients,
+            context: "Schmidt summary analysis"
+        )
         self.state = state
         self.partition = partition
-        self.schmidtRank = schmidtRank
-        self.schmidtCoefficients = schmidtCoefficients
+        self.spectrum = spectrum
         self.classification = classification
     }
+
 }
 
 public struct BipartitePureStateAnalysis: Hashable, Sendable, Codable {
     public let state: Ket
     public let leftDimension: Int
     public let rightDimension: Int
-    public let schmidtRank: Int
-    public let schmidtCoefficients: [Scalar]
+    public let spectrum: SchmidtSpectrum
     public let classification: EntanglementClassification
+
+    public var schmidtRank: Int {
+        spectrum.rank
+    }
+
+    public var schmidtCoefficients: [Scalar] {
+        spectrum.coefficients
+    }
+
+    public var entanglementEntropy: EntanglementEntropy {
+        spectrum.entropy
+    }
+
+    public init(
+        state: Ket,
+        leftDimension: Int,
+        rightDimension: Int,
+        spectrum: SchmidtSpectrum,
+        classification: EntanglementClassification
+    ) {
+        self.state = state
+        self.leftDimension = leftDimension
+        self.rightDimension = rightDimension
+        self.spectrum = spectrum
+        self.classification = classification
+    }
 
     public init(
         state: Ket,
@@ -145,13 +372,30 @@ public struct BipartitePureStateAnalysis: Hashable, Sendable, Codable {
         schmidtCoefficients: [Scalar],
         classification: EntanglementClassification
     ) {
+        let spectrum = validatedSchmidtSpectrum(
+            schmidtRank: schmidtRank,
+            coefficients: schmidtCoefficients,
+            context: "Bipartite pure-state analysis"
+        )
         self.state = state
         self.leftDimension = leftDimension
         self.rightDimension = rightDimension
-        self.schmidtRank = schmidtRank
-        self.schmidtCoefficients = schmidtCoefficients
+        self.spectrum = spectrum
         self.classification = classification
     }
+
+}
+
+private func validatedSchmidtSpectrum(
+    schmidtRank: Int,
+    coefficients: [Scalar],
+    context: String
+) -> SchmidtSpectrum {
+    guard schmidtRank == coefficients.count,
+          let spectrum = try? SchmidtSpectrum(coefficients: coefficients) else {
+        preconditionFailure("\(context) requires a valid Schmidt spectrum.")
+    }
+    return spectrum
 }
 
 private struct PreparedSchmidtDecomposition {
@@ -188,17 +432,16 @@ public struct EntanglementAnalyzer: Sendable {
         partition: SchmidtFactorPartition
     ) throws -> SchmidtSummaryAnalysis {
         let prepared = try prepareSchmidtDecomposition(state, partition: partition)
-        let schmidtCoefficients = significantSchmidtCoefficients(from: prepared.raw)
+        let spectrum = try schmidtSpectrum(from: prepared.raw)
         let classification = classifySchmidtState(
             partition: prepared.partition,
-            schmidtCoefficients: schmidtCoefficients
+            spectrum: spectrum
         )
 
         return SchmidtSummaryAnalysis(
             state: state,
             partition: prepared.partition,
-            schmidtRank: schmidtCoefficients.count,
-            schmidtCoefficients: schmidtCoefficients,
+            spectrum: spectrum,
             classification: classification
         )
     }
@@ -216,11 +459,13 @@ public struct EntanglementAnalyzer: Sendable {
         components.sort {
             $0.coefficient.approximateValue.re > $1.coefficient.approximateValue.re
         }
-        let schmidtCoefficients = components.map(\.coefficient)
-        let schmidtRank = schmidtCoefficients.count
+        let spectrum = try SchmidtSpectrum(
+            coefficients: components.map(\.coefficient),
+            tolerance: config.scalarComparisonEpsilon
+        )
         let classification = classifySchmidtState(
             partition: prepared.partition,
-            schmidtCoefficients: schmidtCoefficients
+            spectrum: spectrum
         )
 
         let reconstructionResidual = try schmidtReconstructionResidual(
@@ -232,14 +477,13 @@ public struct EntanglementAnalyzer: Sendable {
         let reducedSpectrumRelation = try reducedSpectrumRelation(
             state: state,
             partition: prepared.partition,
-            coefficients: schmidtCoefficients
+            spectrum: spectrum
         )
 
         return SchmidtDecompositionAnalysis(
             state: state,
             partition: prepared.partition,
-            schmidtRank: schmidtRank,
-            schmidtCoefficients: schmidtCoefficients,
+            spectrum: spectrum,
             components: components,
             classification: classification,
             reconstructionResidual: reconstructionResidual,
@@ -271,8 +515,7 @@ public struct EntanglementAnalyzer: Sendable {
             state: state,
             leftDimension: summary.partition.leftDimension,
             rightDimension: summary.partition.rightDimension,
-            schmidtRank: summary.schmidtRank,
-            schmidtCoefficients: summary.schmidtCoefficients,
+            spectrum: summary.spectrum,
             classification: summary.classification
         )
     }
@@ -316,18 +559,25 @@ public struct EntanglementAnalyzer: Sendable {
             }
     }
 
+    private func schmidtSpectrum(from raw: SingularValueDecompositionRaw) throws -> SchmidtSpectrum {
+        try SchmidtSpectrum(
+            coefficients: significantSchmidtCoefficients(from: raw),
+            tolerance: config.scalarComparisonEpsilon
+        )
+    }
+
     private func classifySchmidtState(
         partition: ResolvedSchmidtFactorPartition,
-        schmidtCoefficients: [Scalar]
+        spectrum: SchmidtSpectrum
     ) -> EntanglementClassification {
-        let schmidtRank = schmidtCoefficients.count
+        let schmidtRank = spectrum.rank
         guard schmidtRank > 1 else {
             return .product
         }
 
         if partition.leftDimension == partition.rightDimension,
            schmidtRank == partition.leftDimension,
-           schmidtCoefficients.allSatisfy({
+           spectrum.coefficients.allSatisfy({
                abs($0.approximateValue.re - (1 / Foundation.sqrt(Double(partition.leftDimension))))
                    <= config.scalarComparisonEpsilon
            }) {
@@ -442,6 +692,7 @@ public struct EntanglementAnalyzer: Sendable {
             count: partition.leftDimension * partition.rightDimension
         )
 
+        // functional-style: approved loop - mutation mirrors tensor-index remapping.
         for sourceFlatIndex in state.coefficients.indices {
             let fullIndices = try TensorIndexing.unflatten(
                 index: sourceFlatIndex,
@@ -469,6 +720,7 @@ public struct EntanglementAnalyzer: Sendable {
     ) throws -> Double {
         var reconstructedValues = Array(repeating: Scalar.zero, count: leftDimension * rightDimension)
 
+        // functional-style: approved loop - nested indices preserve matrix fill order.
         for row in 0..<leftDimension {
             for col in 0..<rightDimension {
                 let reconstructedEntry = components.reduce(Scalar.zero) { partial, component in
@@ -496,7 +748,7 @@ public struct EntanglementAnalyzer: Sendable {
     private func reducedSpectrumRelation(
         state: Ket,
         partition: ResolvedSchmidtFactorPartition,
-        coefficients: [Scalar]
+        spectrum: SchmidtSpectrum
     ) throws -> ReducedSpectrumRelation {
         let density = try QuantumDomain.pureDensityState(from: .ket(state), config: config)
         let leftReduced = try QuantumDomain.partialTrace(
@@ -514,17 +766,13 @@ public struct EntanglementAnalyzer: Sendable {
         let rightEigenvalues = try backend.decompose(rightReduced.entries).singularValues.map {
             Scalar.approx(ComplexNumber(re: schmidtSanitizedNonNegative($0), im: 0))
         }
-        let squaredCoefficients = coefficients.map { coefficient in
-            let value = coefficient.approximateValue.re
-            return Scalar.approx(ComplexNumber(re: max(0, value * value), im: 0))
-        }
 
         let expectedLeft = paddedSpectrum(
-            from: squaredCoefficients,
+            from: spectrum.probabilities,
             count: leftEigenvalues.count
         )
         let expectedRight = paddedSpectrum(
-            from: squaredCoefficients,
+            from: spectrum.probabilities,
             count: rightEigenvalues.count
         )
         let leftDeviation = maxSpectrumDeviation(lhs: expectedLeft, rhs: leftEigenvalues)
@@ -532,7 +780,7 @@ public struct EntanglementAnalyzer: Sendable {
         let maxDeviation = max(leftDeviation, rightDeviation)
 
         return ReducedSpectrumRelation(
-            squaredSchmidtCoefficients: squaredCoefficients,
+            squaredSchmidtCoefficients: spectrum.probabilities,
             leftEigenvalues: leftEigenvalues,
             rightEigenvalues: rightEigenvalues,
             maxAbsoluteDeviation: maxDeviation,
