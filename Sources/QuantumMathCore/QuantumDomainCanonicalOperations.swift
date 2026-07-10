@@ -961,17 +961,32 @@ private extension QuantumDomain {
         return .approx(ComplexNumber(re: Foundation.sqrt(max(approximate.re, 0)), im: 0))
     }
 
+    /// The single ρ(2×2) → Bloch conversion site: ρ = ½(I + xX + yY + zZ) ⇒
+    /// x = 2·Re ρ01, y = −2·Im ρ01, z = ρ00 − ρ11. The ket and density paths
+    /// below both delegate here so their conventions cannot diverge again
+    /// (a sign divergence between them is exactly the bug fixed 2026-07-03).
+    static func qubitBlochVector(
+        rho00: ComplexNumber,
+        rho01: ComplexNumber,
+        rho11: ComplexNumber
+    ) -> QubitBlochVector {
+        QubitBlochVector(
+            x: .approx(ComplexNumber(re: 2 * rho01.re, im: 0)),
+            y: .approx(ComplexNumber(re: -2 * rho01.im, im: 0)),
+            z: .approx(ComplexNumber(re: rho00.re - rho11.re, im: 0))
+        )
+    }
+
     static func qubitBlochVector(for operatorValue: Operator) -> QubitBlochVector? {
         guard operatorValue.domain == .atomic(.qubit),
               operatorValue.columnBasis == .computational(for: operatorValue.domain) else {
             return nil
         }
 
-        let offDiagonal = operatorValue.entries[0, 1]
-        return QubitBlochVector(
-            x: offDiagonal + offDiagonal.conjugated,
-            y: Scalar.i * (offDiagonal - offDiagonal.conjugated),
-            z: operatorValue.entries[0, 0] - operatorValue.entries[1, 1]
+        return qubitBlochVector(
+            rho00: operatorValue.entries[0, 0].approximateValue,
+            rho01: operatorValue.entries[0, 1].approximateValue,
+            rho11: operatorValue.entries[1, 1].approximateValue
         )
     }
 
@@ -982,16 +997,12 @@ private extension QuantumDomain {
 
         let alpha = coefficients[0].approximateValue
         let beta = coefficients[1].approximateValue
-        let alphaTimesBetaConjugate = alpha * beta.conjugated
-        let x = Scalar.approx(ComplexNumber(re: 2 * alphaTimesBetaConjugate.re, im: 0))
-        let y = Scalar.approx(ComplexNumber(re: 2 * alphaTimesBetaConjugate.im, im: 0))
-        let z = Scalar.approx(
-            ComplexNumber(
-                re: alpha.magnitudeSquared - beta.magnitudeSquared,
-                im: 0
-            )
+        // ρ = |ψ⟩⟨ψ| ⇒ ρ01 = α·β̄; the shared converter owns the sign conventions.
+        return qubitBlochVector(
+            rho00: ComplexNumber(re: alpha.magnitudeSquared, im: 0),
+            rho01: alpha * beta.conjugated,
+            rho11: ComplexNumber(re: beta.magnitudeSquared, im: 0)
         )
-        return QubitBlochVector(x: x, y: y, z: z)
     }
 
     static func realFiniteComponent(_ scalar: Scalar, epsilon: Double) -> Double? {
